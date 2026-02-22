@@ -1,111 +1,329 @@
 import streamlit as st
-import pandas as pd
 import sqlite3
 import hashlib
+import pandas as pd
 from datetime import datetime
 
 # ================= CONFIG =================
 
 st.set_page_config(
-    page_title="Ponzi Enterprise",
+    page_title="Investment Simulation System",
     layout="wide",
-    page_icon="📊"
+    page_icon="📈"
 )
 
-USER_DB="users.db"
-INVESTOR_DB="investors.db"
+DB = "simulation.db"
 
 # ================= DATABASE =================
 
-def connect_user():
-    return sqlite3.connect(USER_DB, check_same_thread=False)
+def get_conn():
+    return sqlite3.connect(DB, check_same_thread=False)
 
-def connect_investor():
-    return sqlite3.connect(INVESTOR_DB, check_same_thread=False)
+conn = get_conn()
+c = conn.cursor()
 
-user_conn=connect_user()
-user_c=user_conn.cursor()
+# Users table
 
-invest_conn=connect_investor()
-invest_c=invest_conn.cursor()
-
-# create user table
-
-user_c.execute("""
+c.execute("""
 CREATE TABLE IF NOT EXISTS users(
 username TEXT PRIMARY KEY,
 password TEXT,
 role TEXT,
+balance REAL DEFAULT 0,
+referral TEXT,
 date TEXT
 )
 """)
 
-# create investor table
+# Transactions table
 
-invest_c.execute("""
-CREATE TABLE IF NOT EXISTS investors(
+c.execute("""
+CREATE TABLE IF NOT EXISTS transactions(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-name TEXT,
-mobile TEXT,
-email TEXT,
-invested REAL,
-promised REAL,
-paid INTEGER,
+username TEXT,
+type TEXT,
+amount REAL,
+status TEXT,
 date TEXT
 )
 """)
 
-user_conn.commit()
-invest_conn.commit()
+conn.commit()
 
 # ================= SECURITY =================
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# ================= CREATE DEFAULT ADMIN =================
+# ================= DEFAULT ADMIN =================
 
-user_c.execute("SELECT * FROM users WHERE username='admin'")
+def create_admin():
 
-if not user_c.fetchone():
+    c.execute("SELECT * FROM users WHERE username='admin'")
 
-    user_c.execute("""
-    INSERT INTO users VALUES(?,?,?,?)
-    """,(
-        "admin",
-        hash_password("admin123"),
-        "admin",
-        datetime.now().strftime("%Y-%m-%d")
-    ))
+    if not c.fetchone():
 
-    user_conn.commit()
+        c.execute("""
+        INSERT INTO users VALUES(?,?,?,?,?,?)
+        """,(
+            "admin",
+            hash_password("admin123"),
+            "admin",
+            0,
+            "",
+            datetime.now().strftime("%Y-%m-%d")
+        ))
+
+        conn.commit()
+
+create_admin()
 
 # ================= SESSION =================
 
 if "user" not in st.session_state:
-    st.session_state.user=None
-    st.session_state.role=None
+    st.session_state.user = None
+    st.session_state.role = None
 
 # ================= LOGIN =================
 
 def login():
 
-    st.title("🔐 Login System")
+    st.title("🔐 Investment Simulation Login")
 
-    tab1,tab2=st.tabs(["Login","Register"])
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
     # LOGIN
 
     with tab1:
 
-        username=st.text_input("Username")
-        password=st.text_input("Password",type="password")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
 
         if st.button("Login"):
 
-            user_c.execute(
-                "SELECT role,password FROM users WHERE username=?",
+            c.execute(
+                "SELECT password, role FROM users WHERE username=?",
                 (username,)
+            )
+
+            result = c.fetchone()
+
+            if result and result[0] == hash_password(password):
+
+                st.session_state.user = username
+                st.session_state.role = result[1]
+
+                st.success("Login successful")
+                st.rerun()
+
+            else:
+                st.error("Invalid login")
+
+    # REGISTER
+
+    with tab2:
+
+        new_user = st.text_input("Username")
+        new_pass = st.text_input("Password", type="password")
+        referral = st.text_input("Referral (optional)")
+
+        if st.button("Register"):
+
+            try:
+
+                c.execute("""
+                INSERT INTO users VALUES(?,?,?,?,?,?)
+                """,(
+                    new_user,
+                    hash_password(new_pass),
+                    "user",
+                    0,
+                    referral,
+                    datetime.now().strftime("%Y-%m-%d")
+                ))
+
+                conn.commit()
+
+                st.success("Registered successfully")
+
+            except:
+                st.error("User already exists")
+
+# ================= ADMIN DASHBOARD =================
+
+def admin_dashboard():
+
+    st.title("📊 Admin Dashboard")
+
+    users = pd.read_sql("SELECT * FROM users", conn)
+    tx = pd.read_sql("SELECT * FROM transactions", conn)
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Total Users", len(users))
+
+    if not tx.empty:
+
+        deposits = tx[tx["type"]=="deposit"]["amount"].sum()
+        withdrawals = tx[tx["type"]=="withdraw"]["amount"].sum()
+
+    else:
+        deposits = 0
+        withdrawals = 0
+
+    col2.metric("Total Deposits", deposits)
+    col3.metric("Total Withdrawals", withdrawals)
+
+    st.subheader("All Transactions")
+
+    if not tx.empty:
+
+        edited = st.data_editor(tx)
+
+        if st.button("Approve Selected Withdrawals"):
+
+            selected = edited[edited.status=="pending"]
+
+            for i in selected["id"]:
+
+                c.execute("""
+                UPDATE transactions
+                SET status='approved'
+                WHERE id=?
+                """,(int(i),))
+
+            conn.commit()
+            st.success("Updated")
+            st.rerun()
+
+# ================= USER DASHBOARD =================
+
+def user_dashboard():
+
+    st.title("👤 User Dashboard")
+
+    username = st.session_state.user
+
+    c.execute("SELECT balance FROM users WHERE username=?", (username,))
+    balance = c.fetchone()[0]
+
+    st.metric("Balance", balance)
+
+    tab1, tab2, tab3 = st.tabs(["Deposit","Withdraw","History"])
+
+    # DEPOSIT
+
+    with tab1:
+
+        amount = st.number_input("Deposit Amount", 0.0)
+
+        if st.button("Deposit"):
+
+            new_balance = balance + amount
+
+            c.execute("""
+            UPDATE users SET balance=? WHERE username=?
+            """,(new_balance, username))
+
+            c.execute("""
+            INSERT INTO transactions(username,type,amount,status,date)
+            VALUES(?,?,?,?,?)
+            """,(
+                username,
+                "deposit",
+                amount,
+                "approved",
+                datetime.now().strftime("%Y-%m-%d")
+            ))
+
+            conn.commit()
+
+            st.success("Deposit successful")
+            st.rerun()
+
+    # WITHDRAW
+
+    with tab2:
+
+        amount = st.number_input("Withdraw Amount", 0.0)
+
+        if st.button("Request Withdraw"):
+
+            if amount <= balance:
+
+                c.execute("""
+                INSERT INTO transactions(username,type,amount,status,date)
+                VALUES(?,?,?,?,?)
+                """,(
+                    username,
+                    "withdraw",
+                    amount,
+                    "pending",
+                    datetime.now().strftime("%Y-%m-%d")
+                ))
+
+                conn.commit()
+
+                st.success("Withdraw request submitted")
+
+            else:
+
+                st.error("Insufficient balance")
+
+    # HISTORY
+
+    with tab3:
+
+        df = pd.read_sql(
+            f"SELECT * FROM transactions WHERE username='{username}'",
+            conn
+        )
+
+        st.dataframe(df)
+
+    # PROFIT SIMULATION BUTTON
+
+    st.subheader("Educational Profit Simulation")
+
+    if st.button("Generate 2% Simulation Profit"):
+
+        profit = balance * 0.02
+        new_balance = balance + profit
+
+        c.execute("""
+        UPDATE users SET balance=? WHERE username=?
+        """,(new_balance, username))
+
+        conn.commit()
+
+        st.success(f"Simulation profit added: {profit}")
+        st.rerun()
+
+# ================= ROUTER =================
+
+if st.session_state.user:
+
+    st.sidebar.write("User:", st.session_state.user)
+    st.sidebar.write("Role:", st.session_state.role)
+
+    if st.sidebar.button("Logout"):
+
+        st.session_state.user = None
+        st.session_state.role = None
+
+        st.rerun()
+
+    if st.session_state.role == "admin":
+
+        admin_dashboard()
+
+    else:
+
+        user_dashboard()
+
+else:
+
+    login()                (username,)
             )
 
             result=user_c.fetchone()
