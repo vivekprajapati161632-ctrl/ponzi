@@ -3,24 +3,43 @@ import pandas as pd
 import os
 import re
 import json
+import hashlib
 from datetime import datetime
 
-st.set_page_config(page_title="Secure Ponzi Simulator", layout="wide")
+# ================= CONFIG =================
 
-# ========= DATE =========
-
-today = datetime.now().strftime("%Y-%m-%d")
-
-# ========= FILE SETUP =========
+st.set_page_config(
+    page_title="Ponzi Simulator Pro",
+    layout="wide",
+    page_icon="📉"
+)
 
 INVESTOR_FILE = "investors.csv"
 USER_FILE = "users.csv"
 SESSION_FILE = "session.json"
 
-REQUIRED_INVESTOR_COLUMNS = ["Name","Mobile","Email","Invested","Promised","Paid","Date"]
-REQUIRED_USER_COLUMNS = ["Username","Password","Role","Date"]
+today = datetime.now().strftime("%Y-%m-%d")
 
-# ========= SESSION FUNCTIONS =========
+# ================= SECURITY =================
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# ================= VALIDATION =================
+
+def valid_username(u):
+    return bool(re.fullmatch(r"[A-Za-z0-9_]{3,20}", u))
+
+def valid_password(p):
+    return len(p) >= 4
+
+def valid_mobile(m):
+    return bool(re.fullmatch(r"[6-9]\d{9}", m))
+
+def valid_email(e):
+    return bool(re.fullmatch(r"[^@]+@[^@]+\.[^@]+", e))
+
+# ================= SESSION =================
 
 def save_session(username, role):
 
@@ -33,19 +52,17 @@ def save_session(username, role):
     with open(SESSION_FILE, "w") as f:
         json.dump(session, f)
 
-
 def load_session():
 
     if os.path.exists(SESSION_FILE):
 
         with open(SESSION_FILE, "r") as f:
 
-            session = json.load(f)
+            s = json.load(f)
 
-            st.session_state.logged_in = session.get("logged_in", False)
-            st.session_state.username = session.get("username", "")
-            st.session_state.role = session.get("role", "")
-
+            st.session_state.logged_in = s.get("logged_in", False)
+            st.session_state.username = s.get("username", "")
+            st.session_state.role = s.get("role", "")
 
 def clear_session():
 
@@ -56,253 +73,266 @@ def clear_session():
     st.session_state.username = ""
     st.session_state.role = ""
 
-# ========= SESSION INIT =========
-
-if "logged_in" not in st.session_state:
-
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.session_state.role = ""
-
-# Load saved session
-load_session()
-
-# ========= FILE FUNCTIONS =========
+# ================= FILE FUNCTIONS =================
 
 def load_users():
 
     if os.path.exists(USER_FILE):
+        return pd.read_csv(USER_FILE)
 
-        df = pd.read_csv(USER_FILE)
+    return pd.DataFrame(columns=["Username","Password","Role","Date"])
 
-        for col in REQUIRED_USER_COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
-
-        return df.to_dict("records")
-
-    return []
-
-
-def save_users(data):
-
-    df = pd.DataFrame(data)
+def save_users(df):
     df.to_csv(USER_FILE, index=False)
-
 
 def load_investors():
 
     if os.path.exists(INVESTOR_FILE):
+        return pd.read_csv(INVESTOR_FILE)
 
-        df = pd.read_csv(INVESTOR_FILE)
+    return pd.DataFrame(columns=[
+        "Name","Mobile","Email",
+        "Invested","Promised","Paid","Date"
+    ])
 
-        for col in REQUIRED_INVESTOR_COLUMNS:
-
-            if col not in df.columns:
-
-                if col == "Paid":
-                    df[col] = False
-                else:
-                    df[col] = ""
-
-        return df.to_dict("records")
-
-    return []
-
-
-def save_investors(data):
-
-    df = pd.DataFrame(data)
+def save_investors(df):
     df.to_csv(INVESTOR_FILE, index=False)
 
-# ========= CREATE DEFAULT ADMIN =========
+# ================= INIT =================
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.role = ""
+
+load_session()
+
+# ================= CREATE DEFAULT ADMIN =================
 
 users = load_users()
 
-if not any(u["Username"] == "admin" for u in users):
+if "admin" not in users["Username"].values:
 
-    users.append({
+    new = pd.DataFrame([{
+        "Username":"admin",
+        "Password":hash_password("admin"),
+        "Role":"admin",
+        "Date":today
+    }])
 
-        "Username": "admin",
-        "Password": "admin",
-        "Role": "admin",
-        "Date": today
-
-    })
-
+    users = pd.concat([users,new])
     save_users(users)
 
-# ========= VALIDATION =========
+# ================= UI DESIGN =================
 
-def valid_username(u):
-    return bool(re.fullmatch(r"[A-Za-z0-9_]{3,20}", u))
+def stats_cards(df):
 
-def valid_password(p):
-    return len(p) >= 4
+    total_invested = df["Invested"].sum()
+    total_promised = df["Promised"].sum()
+    pending = total_promised - df[df["Paid"]==True]["Promised"].sum()
 
-# ========= LOGIN PAGE =========
+    col1,col2,col3 = st.columns(3)
+
+    col1.metric("Total Invested", f"₹{total_invested:,.0f}")
+    col2.metric("Total Promised", f"₹{total_promised:,.0f}")
+    col3.metric("Pending Liability", f"₹{pending:,.0f}")
+
+# ================= LOGIN PAGE =================
 
 def login_page():
 
-    st.title("🔐 Login System")
+    st.title("🔐 Ponzi Simulator Pro")
 
-    tab1, tab2 = st.tabs(["Login", "Create User"])
+    tab1,tab2 = st.tabs(["Login","Register"])
 
     users = load_users()
 
     # LOGIN
+
     with tab1:
 
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        user = st.text_input("Username")
+        pwd = st.text_input("Password",type="password")
 
         if st.button("Login"):
 
-            for u in users:
+            hashed = hash_password(pwd)
 
-                if u["Username"] == username and u["Password"] == password:
+            match = users[
+                (users.Username==user) &
+                (users.Password==hashed)
+            ]
 
-                    st.session_state.logged_in = True
-                    st.session_state.username = username
-                    st.session_state.role = u["Role"]
+            if not match.empty:
 
-                    save_session(username, u["Role"])
+                role = match.iloc[0]["Role"]
 
-                    st.success("Login successful")
+                st.session_state.logged_in = True
+                st.session_state.username = user
+                st.session_state.role = role
 
-                    st.rerun()
+                save_session(user, role)
 
-            st.error("Invalid username or password")
+                st.success("Login success")
+                st.rerun()
 
-    # CREATE USER
+            else:
+                st.error("Invalid credentials")
+
+    # REGISTER
+
     with tab2:
 
         new_user = st.text_input("New Username")
-        new_pass = st.text_input("New Password", type="password")
+        new_pass = st.text_input("New Password",type="password")
 
-        if st.button("Create User"):
+        if st.button("Register"):
 
             if not valid_username(new_user):
-
                 st.error("Invalid username")
 
             elif not valid_password(new_pass):
+                st.error("Weak password")
 
-                st.error("Password min 4 char")
-
-            elif any(u["Username"] == new_user for u in users):
-
+            elif new_user in users.Username.values:
                 st.error("User exists")
 
             else:
 
-                users.append({
+                new = pd.DataFrame([{
+                    "Username":new_user,
+                    "Password":hash_password(new_pass),
+                    "Role":"user",
+                    "Date":today
+                }])
 
-                    "Username": new_user,
-                    "Password": new_pass,
-                    "Role": "user",
-                    "Date": today
-
-                })
-
+                users = pd.concat([users,new])
                 save_users(users)
 
                 st.success("User created")
 
-# ========= MAIN APP =========
+# ================= ADMIN PANEL =================
 
-def main_app():
+def admin_panel():
 
-    st.title("📉 Money Gurrented Schem")
+    st.title("📊 Admin Dashboard")
 
-    st.sidebar.write(f"Logged in as: {st.session_state.username}")
+    df = load_investors()
 
-    if st.sidebar.button("Logout"):
+    stats_cards(df)
 
-        clear_session()
-        st.rerun()
+    st.divider()
 
-    # Always load latest investors
-    st.session_state.investors = load_investors()
+    # ADD INVESTOR
 
-    # ADD
-    st.sidebar.header("Add Investor")
+    st.subheader("Add Investor")
 
-    name = st.sidebar.text_input("Full Name")
-    mobile = st.sidebar.text_input("Mobile")
-    email = st.sidebar.text_input("Email")
-    amount = st.sidebar.number_input("Amount", min_value=0)
-    percent = st.sidebar.slider("Return %", 10, 200, 50)
+    col1,col2,col3,col4 = st.columns(4)
 
-    if st.sidebar.button("Add Investor"):
+    name = col1.text_input("Name")
+    mobile = col2.text_input("Mobile")
+    email = col3.text_input("Email")
+    amount = col4.number_input("Amount",0)
 
-        mobiles = [i["Mobile"] for i in st.session_state.investors]
-        emails = [i["Email"] for i in st.session_state.investors]
+    percent = st.slider("Return %",10,200,50)
 
-        if mobile in mobiles:
+    if st.button("Add"):
 
+        if not name:
+            st.error("Enter name")
+
+        elif not valid_mobile(mobile):
+            st.error("Invalid mobile")
+
+        elif not valid_email(email):
+            st.error("Invalid email")
+
+        elif mobile in df.Mobile.astype(str).values:
             st.error("Mobile exists")
-
-        elif email in emails:
-
-            st.error("Email exists")
 
         else:
 
-            promised = amount * (1 + percent / 100)
+            promised = amount*(1+percent/100)
 
-            st.session_state.investors.append({
+            new = pd.DataFrame([{
+                "Name":name,
+                "Mobile":mobile,
+                "Email":email,
+                "Invested":amount,
+                "Promised":promised,
+                "Paid":False,
+                "Date":today
+            }])
 
-                "Name": name,
-                "Mobile": mobile,
-                "Email": email,
-                "Invested": amount,
-                "Promised": promised,
-                "Paid": False,
-                "Date": today
-
-            })
-
-            save_investors(st.session_state.investors)
+            df = pd.concat([df,new])
+            save_investors(df)
 
             st.success("Added")
-
             st.rerun()
+
+    # ================= TABLE =================
+
+    st.subheader("Investors")
+
+    if df.empty:
+        st.warning("No investors")
+        return
+
+    df["Select"] = False
+
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        num_rows="dynamic"
+    )
 
     # REMOVE
 
-    if st.session_state.investors:
+    if st.button("Remove Selected"):
 
-        mobiles = [i["Mobile"] for i in st.session_state.investors]
+        new_df = edited[edited.Select==False]
 
-        remove = st.sidebar.selectbox("Remove Investor", mobiles)
+        save_investors(new_df.drop(columns=["Select"]))
 
-        if st.sidebar.button("Remove"):
+        st.success("Removed")
+        st.rerun()
 
-            st.session_state.investors = [
+# ================= USER PANEL =================
 
-                i for i in st.session_state.investors
-                if i["Mobile"] != remove
+def user_panel():
 
-            ]
+    st.title("👤 User Dashboard")
 
-            save_investors(st.session_state.investors)
+    df = load_investors()
 
-            st.success("Removed")
+    stats_cards(df)
 
-            st.rerun()
+    search = st.text_input("Search Investor")
 
-    # TABLE
+    if search:
 
-    df = pd.DataFrame(st.session_state.investors)
+        df = df[
+            df.Name.str.contains(search,case=False) |
+            df.Mobile.astype(str).str.contains(search)
+        ]
 
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df,use_container_width=True)
 
-# ========= ROUTER =========
+# ================= MAIN =================
 
 if st.session_state.logged_in:
 
-    main_app()
+    st.sidebar.write(f"👤 {st.session_state.username}")
+    st.sidebar.write(f"Role: {st.session_state.role}")
+
+    if st.sidebar.button("Logout"):
+        clear_session()
+        st.rerun()
+
+    if st.session_state.role=="admin":
+        admin_panel()
+    else:
+        user_panel()
 
 else:
 
