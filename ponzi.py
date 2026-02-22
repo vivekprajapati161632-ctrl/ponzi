@@ -55,11 +55,11 @@ conn.commit()
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# ================= DEFAULT ADMIN =================
+# ================= CREATE DEFAULT ADMIN =================
 
 def create_admin():
 
-    c.execute("SELECT * FROM users WHERE username='admin'")
+    c.execute("SELECT * FROM users WHERE username=?", ("admin",))
 
     if not c.fetchone():
 
@@ -88,18 +88,18 @@ if "user" not in st.session_state:
 
 def login():
 
-    st.title("🔐 Investment Simulation Login")
+    st.title("🔐 Investment Simulation System")
 
     tab1, tab2 = st.tabs(["Login", "Register"])
 
-    # LOGIN
+    # LOGIN TAB
 
     with tab1:
 
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
 
-        if st.button("Login"):
+        if st.button("Login", key="login_btn"):
 
             c.execute(
                 "SELECT password, role FROM users WHERE username=?",
@@ -117,17 +117,17 @@ def login():
                 st.rerun()
 
             else:
-                st.error("Invalid login")
+                st.error("Invalid username or password")
 
-    # REGISTER
+    # REGISTER TAB
 
     with tab2:
 
-        new_user = st.text_input("Username")
-        new_pass = st.text_input("Password", type="password")
-        referral = st.text_input("Referral (optional)")
+        new_user = st.text_input("New Username", key="reg_user")
+        new_pass = st.text_input("New Password", type="password", key="reg_pass")
+        referral = st.text_input("Referral (optional)", key="reg_ref")
 
-        if st.button("Register"):
+        if st.button("Register", key="register_btn"):
 
             try:
 
@@ -144,10 +144,11 @@ def login():
 
                 conn.commit()
 
-                st.success("Registered successfully")
+                st.success("Registration successful")
 
-            except:
-                st.error("User already exists")
+            except sqlite3.IntegrityError:
+
+                st.error("Username already exists")
 
 # ================= ADMIN DASHBOARD =================
 
@@ -155,75 +156,88 @@ def admin_dashboard():
 
     st.title("📊 Admin Dashboard")
 
-    users = pd.read_sql("SELECT * FROM users", conn)
-    tx = pd.read_sql("SELECT * FROM transactions", conn)
+    users_df = pd.read_sql("SELECT * FROM users", conn)
+    tx_df = pd.read_sql("SELECT * FROM transactions", conn)
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Total Users", len(users))
+    col1.metric("Total Users", len(users_df))
 
-    if not tx.empty:
+    deposits = tx_df[tx_df["type"]=="deposit"]["amount"].sum() if not tx_df.empty else 0
+    withdrawals = tx_df[tx_df["type"]=="withdraw"]["amount"].sum() if not tx_df.empty else 0
 
-        deposits = tx[tx["type"]=="deposit"]["amount"].sum()
-        withdrawals = tx[tx["type"]=="withdraw"]["amount"].sum()
+    col2.metric("Total Deposits", f"₹{deposits:.2f}")
+    col3.metric("Total Withdrawals", f"₹{withdrawals:.2f}")
 
-    else:
-        deposits = 0
-        withdrawals = 0
+    st.subheader("Pending Withdraw Requests")
 
-    col2.metric("Total Deposits", deposits)
-    col3.metric("Total Withdrawals", withdrawals)
+    pending = tx_df[(tx_df["type"]=="withdraw") & (tx_df["status"]=="pending")]
+
+    if not pending.empty:
+
+        for index, row in pending.iterrows():
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            col1.write(row["username"])
+            col2.write(f"₹{row['amount']}")
+            col3.write(row["date"])
+
+            if col4.button("Approve", key=f"approve_{row['id']}"):
+
+                # deduct balance
+                c.execute(
+                    "UPDATE users SET balance = balance - ? WHERE username=?",
+                    (row["amount"], row["username"])
+                )
+
+                # update transaction
+                c.execute(
+                    "UPDATE transactions SET status='approved' WHERE id=?",
+                    (row["id"],)
+                )
+
+                conn.commit()
+
+                st.success("Withdrawal approved")
+                st.rerun()
 
     st.subheader("All Transactions")
 
-    if not tx.empty:
-
-        edited = st.data_editor(tx)
-
-        if st.button("Approve Selected Withdrawals"):
-
-            selected = edited[edited.status=="pending"]
-
-            for i in selected["id"]:
-
-                c.execute("""
-                UPDATE transactions
-                SET status='approved'
-                WHERE id=?
-                """,(int(i),))
-
-            conn.commit()
-            st.success("Updated")
-            st.rerun()
+    st.dataframe(tx_df, use_container_width=True)
 
 # ================= USER DASHBOARD =================
 
 def user_dashboard():
 
-    st.title("👤 User Dashboard")
-
     username = st.session_state.user
+
+    st.title(f"👤 Welcome, {username}")
 
     c.execute("SELECT balance FROM users WHERE username=?", (username,))
     balance = c.fetchone()[0]
 
-    st.metric("Balance", balance)
+    st.metric("Current Balance", f"₹{balance:.2f}")
 
-    tab1, tab2, tab3 = st.tabs(["Deposit","Withdraw","History"])
+    tab1, tab2, tab3 = st.tabs(["Deposit", "Withdraw", "History"])
 
-    # DEPOSIT
+    # ================= DEPOSIT =================
 
     with tab1:
 
-        amount = st.number_input("Deposit Amount", 0.0)
+        deposit_amount = st.number_input(
+            "Enter Deposit Amount",
+            min_value=0.0,
+            step=100.0,
+            key="deposit_amount"
+        )
 
-        if st.button("Deposit"):
+        if st.button("Deposit", key="deposit_button"):
 
-            new_balance = balance + amount
-
-            c.execute("""
-            UPDATE users SET balance=? WHERE username=?
-            """,(new_balance, username))
+            c.execute(
+                "UPDATE users SET balance = balance + ? WHERE username=?",
+                (deposit_amount, username)
+            )
 
             c.execute("""
             INSERT INTO transactions(username,type,amount,status,date)
@@ -231,7 +245,7 @@ def user_dashboard():
             """,(
                 username,
                 "deposit",
-                amount,
+                deposit_amount,
                 "approved",
                 datetime.now().strftime("%Y-%m-%d")
             ))
@@ -241,15 +255,20 @@ def user_dashboard():
             st.success("Deposit successful")
             st.rerun()
 
-    # WITHDRAW
+    # ================= WITHDRAW =================
 
     with tab2:
 
-        amount = st.number_input("Withdraw Amount", 0.0)
+        withdraw_amount = st.number_input(
+            "Enter Withdraw Amount",
+            min_value=0.0,
+            step=100.0,
+            key="withdraw_amount"
+        )
 
-        if st.button("Request Withdraw"):
+        if st.button("Request Withdraw", key="withdraw_button"):
 
-            if amount <= balance:
+            if withdraw_amount <= balance:
 
                 c.execute("""
                 INSERT INTO transactions(username,type,amount,status,date)
@@ -257,7 +276,7 @@ def user_dashboard():
                 """,(
                     username,
                     "withdraw",
-                    amount,
+                    withdraw_amount,
                     "pending",
                     datetime.now().strftime("%Y-%m-%d")
                 ))
@@ -270,40 +289,41 @@ def user_dashboard():
 
                 st.error("Insufficient balance")
 
-    # HISTORY
+    # ================= HISTORY =================
 
     with tab3:
 
         df = pd.read_sql(
-            f"SELECT * FROM transactions WHERE username='{username}'",
-            conn
+            "SELECT * FROM transactions WHERE username=?",
+            conn,
+            params=(username,)
         )
 
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
 
-    # PROFIT SIMULATION BUTTON
+    # ================= PROFIT SIMULATION =================
 
-    st.subheader("Educational Profit Simulation")
+    st.subheader("Simulation Profit (Educational)")
 
-    if st.button("Generate 2% Simulation Profit"):
+    if st.button("Add 2% Simulation Profit", key="profit_button"):
 
         profit = balance * 0.02
-        new_balance = balance + profit
 
-        c.execute("""
-        UPDATE users SET balance=? WHERE username=?
-        """,(new_balance, username))
+        c.execute(
+            "UPDATE users SET balance = balance + ? WHERE username=?",
+            (profit, username)
+        )
 
         conn.commit()
 
-        st.success(f"Simulation profit added: {profit}")
+        st.success(f"Profit added: ₹{profit:.2f}")
         st.rerun()
 
 # ================= ROUTER =================
 
 if st.session_state.user:
 
-    st.sidebar.write("User:", st.session_state.user)
+    st.sidebar.write("Logged in as:", st.session_state.user)
     st.sidebar.write("Role:", st.session_state.role)
 
     if st.sidebar.button("Logout"):
@@ -314,188 +334,6 @@ if st.session_state.user:
         st.rerun()
 
     if st.session_state.role == "admin":
-
-        admin_dashboard()
-
-    else:
-
-        user_dashboard()
-
-else:
-
-    login()                (username,)
-            )
-
-            result=user_c.fetchone()
-
-            if result and result[1]==hash_password(password):
-
-                st.session_state.user=username
-                st.session_state.role=result[0]
-
-                st.success("Login successful")
-                st.rerun()
-
-            else:
-                st.error("Invalid login")
-
-    # REGISTER
-
-    with tab2:
-
-        new_user=st.text_input("New Username")
-        new_pass=st.text_input("New Password",type="password")
-
-        if st.button("Register"):
-
-            try:
-
-                user_c.execute("""
-                INSERT INTO users VALUES(?,?,?,?)
-                """,(
-                    new_user,
-                    hash_password(new_pass),
-                    "user",
-                    datetime.now().strftime("%Y-%m-%d")
-                ))
-
-                user_conn.commit()
-
-                st.success("User created")
-
-            except:
-                st.error("User exists")
-
-# ================= ADMIN DASHBOARD =================
-
-def admin_dashboard():
-
-    st.title("📊 Admin Dashboard")
-
-    df=pd.read_sql("SELECT * FROM investors", invest_conn)
-
-    # stats
-
-    if not df.empty:
-
-        col1,col2,col3,col4=st.columns(4)
-
-        col1.metric("Invested",df["invested"].sum())
-        col2.metric("Promised",df["promised"].sum())
-        col3.metric("Paid",df[df["paid"]==1]["promised"].sum())
-        col4.metric("Pending",
-            df["promised"].sum()-df[df["paid"]==1]["promised"].sum()
-        )
-
-    tabs=st.tabs(["Investors","Add Investor","Delete Investor"])
-
-    # view
-
-    with tabs[0]:
-
-        st.dataframe(df,use_container_width=True)
-
-    # add
-
-    with tabs[1]:
-
-        name=st.text_input("Name")
-        mobile=st.text_input("Mobile")
-        email=st.text_input("Email")
-        amount=st.number_input("Amount",0)
-        percent=st.slider("Return %",10,200,50)
-
-        if st.button("Add"):
-
-            promised=amount*(1+percent/100)
-
-            invest_c.execute("""
-            INSERT INTO investors(
-            name,mobile,email,invested,promised,paid,date
-            )
-            VALUES(?,?,?,?,?,?,?)
-            """,(
-                name,mobile,email,
-                amount,promised,
-                0,
-                datetime.now().strftime("%Y-%m-%d")
-            ))
-
-            invest_conn.commit()
-
-            st.success("Added")
-            st.rerun()
-
-    # delete checkbox
-
-    with tabs[2]:
-
-        if not df.empty:
-
-            df["Select"]=False
-
-            edited=st.data_editor(df)
-
-            if st.button("Delete Selected"):
-
-                ids=edited[edited.Select==True]["id"]
-
-                for i in ids:
-                    invest_c.execute(
-                        "DELETE FROM investors WHERE id=?",(int(i),)
-                    )
-
-                invest_conn.commit()
-
-                st.success("Deleted")
-                st.rerun()
-
-# ================= USER DASHBOARD =================
-
-def user_dashboard():
-
-    st.title("👤 User Dashboard")
-
-    df=pd.read_sql("SELECT * FROM investors", invest_conn)
-
-    st.subheader("Investor Data")
-
-    search=st.text_input("Search")
-
-    if search:
-
-        df=df[
-            df["name"].str.contains(search,case=False) |
-            df["mobile"].astype(str).str.contains(search)
-        ]
-
-    st.dataframe(df,use_container_width=True)
-
-    # chart
-
-    st.subheader("Investment Chart")
-
-    if not df.empty:
-
-        chart=df.groupby("date")["invested"].sum()
-
-        st.line_chart(chart)
-
-# ================= ROUTER =================
-
-if st.session_state.user:
-
-    st.sidebar.write("User:",st.session_state.user)
-    st.sidebar.write("Role:",st.session_state.role)
-
-    if st.sidebar.button("Logout"):
-
-        st.session_state.user=None
-        st.session_state.role=None
-
-        st.rerun()
-
-    if st.session_state.role=="admin":
 
         admin_dashboard()
 
