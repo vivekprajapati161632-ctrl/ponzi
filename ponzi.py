@@ -7,24 +7,31 @@ from datetime import datetime
 # ================= CONFIG =================
 
 st.set_page_config(
-    page_title="Ponzi Ultra Pro",
+    page_title="Ponzi Enterprise",
     layout="wide",
-    page_icon="📉"
+    page_icon="📊"
 )
 
-DB="database.db"
+USER_DB="users.db"
+INVESTOR_DB="investors.db"
 
 # ================= DATABASE =================
 
-def connect():
-    return sqlite3.connect(DB, check_same_thread=False)
+def connect_user():
+    return sqlite3.connect(USER_DB, check_same_thread=False)
 
-conn=connect()
-c=conn.cursor()
+def connect_investor():
+    return sqlite3.connect(INVESTOR_DB, check_same_thread=False)
 
-# create tables
+user_conn=connect_user()
+user_c=user_conn.cursor()
 
-c.execute("""
+invest_conn=connect_investor()
+invest_c=invest_conn.cursor()
+
+# create user table
+
+user_c.execute("""
 CREATE TABLE IF NOT EXISTS users(
 username TEXT PRIMARY KEY,
 password TEXT,
@@ -33,7 +40,9 @@ date TEXT
 )
 """)
 
-c.execute("""
+# create investor table
+
+invest_c.execute("""
 CREATE TABLE IF NOT EXISTS investors(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 name TEXT,
@@ -46,28 +55,30 @@ date TEXT
 )
 """)
 
-conn.commit()
+user_conn.commit()
+invest_conn.commit()
 
 # ================= SECURITY =================
 
-def hash_password(p):
-    return hashlib.sha256(p.encode()).hexdigest()
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-# create default admin
+# ================= CREATE DEFAULT ADMIN =================
 
-c.execute("SELECT * FROM users WHERE username='admin'")
-if not c.fetchone():
+user_c.execute("SELECT * FROM users WHERE username='admin'")
 
-    c.execute("""
+if not user_c.fetchone():
+
+    user_c.execute("""
     INSERT INTO users VALUES(?,?,?,?)
     """,(
         "admin",
-        hash_password("admin"),
+        hash_password("admin123"),
         "admin",
         datetime.now().strftime("%Y-%m-%d")
     ))
 
-    conn.commit()
+    user_conn.commit()
 
 # ================= SESSION =================
 
@@ -79,166 +90,200 @@ if "user" not in st.session_state:
 
 def login():
 
-    st.title("🔐 Ultra Pro Login")
+    st.title("🔐 Login System")
 
-    user=st.text_input("Username")
-    pwd=st.text_input("Password", type="password")
+    tab1,tab2=st.tabs(["Login","Register"])
 
-    if st.button("Login"):
+    # LOGIN
 
-        c.execute(
-            "SELECT role,password FROM users WHERE username=?",
-            (user,)
+    with tab1:
+
+        username=st.text_input("Username")
+        password=st.text_input("Password",type="password")
+
+        if st.button("Login"):
+
+            user_c.execute(
+                "SELECT role,password FROM users WHERE username=?",
+                (username,)
+            )
+
+            result=user_c.fetchone()
+
+            if result and result[1]==hash_password(password):
+
+                st.session_state.user=username
+                st.session_state.role=result[0]
+
+                st.success("Login successful")
+                st.rerun()
+
+            else:
+                st.error("Invalid login")
+
+    # REGISTER
+
+    with tab2:
+
+        new_user=st.text_input("New Username")
+        new_pass=st.text_input("New Password",type="password")
+
+        if st.button("Register"):
+
+            try:
+
+                user_c.execute("""
+                INSERT INTO users VALUES(?,?,?,?)
+                """,(
+                    new_user,
+                    hash_password(new_pass),
+                    "user",
+                    datetime.now().strftime("%Y-%m-%d")
+                ))
+
+                user_conn.commit()
+
+                st.success("User created")
+
+            except:
+                st.error("User exists")
+
+# ================= ADMIN DASHBOARD =================
+
+def admin_dashboard():
+
+    st.title("📊 Admin Dashboard")
+
+    df=pd.read_sql("SELECT * FROM investors", invest_conn)
+
+    # stats
+
+    if not df.empty:
+
+        col1,col2,col3,col4=st.columns(4)
+
+        col1.metric("Invested",df["invested"].sum())
+        col2.metric("Promised",df["promised"].sum())
+        col3.metric("Paid",df[df["paid"]==1]["promised"].sum())
+        col4.metric("Pending",
+            df["promised"].sum()-df[df["paid"]==1]["promised"].sum()
         )
 
-        result=c.fetchone()
+    tabs=st.tabs(["Investors","Add Investor","Delete Investor"])
 
-        if result and result[1]==hash_password(pwd):
-
-            st.session_state.user=user
-            st.session_state.role=result[0]
-
-            st.rerun()
-
-        else:
-            st.error("Invalid login")
-
-# ================= STATS =================
-
-def stats():
-
-    df=pd.read_sql("SELECT * FROM investors", conn)
-
-    if df.empty:
-        return
-
-    total_invested=df["invested"].sum()
-    total_promised=df["promised"].sum()
-    total_paid=df[df["paid"]==1]["promised"].sum()
-    pending=total_promised-total_paid
-
-    col1,col2,col3,col4=st.columns(4)
-
-    col1.metric("Invested",f"₹{total_invested:,.0f}")
-    col2.metric("Promised",f"₹{total_promised:,.0f}")
-    col3.metric("Paid",f"₹{total_paid:,.0f}")
-    col4.metric("Pending",f"₹{pending:,.0f}")
-
-# ================= ADD INVESTOR =================
-
-def add_investor():
-
-    st.subheader("Add Investor")
-
-    col1,col2,col3=st.columns(3)
-
-    name=col1.text_input("Name")
-    mobile=col2.text_input("Mobile")
-    email=col3.text_input("Email")
-
-    amount=st.number_input("Amount",0)
-    percent=st.slider("Return %",10,200,50)
-
-    if st.button("Add Investor"):
-
-        promised=amount*(1+percent/100)
-
-        c.execute("""
-        INSERT INTO investors(
-        name,mobile,email,invested,promised,paid,date
-        )
-        VALUES(?,?,?,?,?,?,?)
-        """,(
-            name,
-            mobile,
-            email,
-            amount,
-            promised,
-            0,
-            datetime.now().strftime("%Y-%m-%d")
-        ))
-
-        conn.commit()
-
-        st.success("Added")
-        st.rerun()
-
-# ================= TABLE =================
-
-def investor_table():
-
-    df=pd.read_sql("SELECT * FROM investors", conn)
-
-    if df.empty:
-        st.warning("No investors")
-        return
-
-    df["Select"]=False
-
-    edited=st.data_editor(df)
-
-    if st.button("Delete Selected"):
-
-        ids=edited[edited.Select==True]["id"].tolist()
-
-        for i in ids:
-
-            c.execute("DELETE FROM investors WHERE id=?",(i,))
-
-        conn.commit()
-
-        st.success("Deleted")
-        st.rerun()
-
-# ================= CHART =================
-
-def charts():
-
-    df=pd.read_sql("SELECT * FROM investors", conn)
-
-    if df.empty:
-        return
-
-    st.subheader("Growth Chart")
-
-    chart=df.groupby("date")["invested"].sum()
-
-    st.line_chart(chart)
-
-# ================= MAIN =================
-
-def dashboard():
-
-    st.title("📊 Ponzi Ultra Pro Dashboard")
-
-    stats()
-
-    tabs=st.tabs([
-        "Investors",
-        "Add",
-        "Charts"
-    ])
+    # view
 
     with tabs[0]:
-        investor_table()
+
+        st.dataframe(df,use_container_width=True)
+
+    # add
 
     with tabs[1]:
-        add_investor()
+
+        name=st.text_input("Name")
+        mobile=st.text_input("Mobile")
+        email=st.text_input("Email")
+        amount=st.number_input("Amount",0)
+        percent=st.slider("Return %",10,200,50)
+
+        if st.button("Add"):
+
+            promised=amount*(1+percent/100)
+
+            invest_c.execute("""
+            INSERT INTO investors(
+            name,mobile,email,invested,promised,paid,date
+            )
+            VALUES(?,?,?,?,?,?,?)
+            """,(
+                name,mobile,email,
+                amount,promised,
+                0,
+                datetime.now().strftime("%Y-%m-%d")
+            ))
+
+            invest_conn.commit()
+
+            st.success("Added")
+            st.rerun()
+
+    # delete checkbox
 
     with tabs[2]:
-        charts()
+
+        if not df.empty:
+
+            df["Select"]=False
+
+            edited=st.data_editor(df)
+
+            if st.button("Delete Selected"):
+
+                ids=edited[edited.Select==True]["id"]
+
+                for i in ids:
+                    invest_c.execute(
+                        "DELETE FROM investors WHERE id=?",(int(i),)
+                    )
+
+                invest_conn.commit()
+
+                st.success("Deleted")
+                st.rerun()
+
+# ================= USER DASHBOARD =================
+
+def user_dashboard():
+
+    st.title("👤 User Dashboard")
+
+    df=pd.read_sql("SELECT * FROM investors", invest_conn)
+
+    st.subheader("Investor Data")
+
+    search=st.text_input("Search")
+
+    if search:
+
+        df=df[
+            df["name"].str.contains(search,case=False) |
+            df["mobile"].astype(str).str.contains(search)
+        ]
+
+    st.dataframe(df,use_container_width=True)
+
+    # chart
+
+    st.subheader("Investment Chart")
+
+    if not df.empty:
+
+        chart=df.groupby("date")["invested"].sum()
+
+        st.line_chart(chart)
 
 # ================= ROUTER =================
 
 if st.session_state.user:
 
-    st.sidebar.write(st.session_state.user)
+    st.sidebar.write("User:",st.session_state.user)
+    st.sidebar.write("Role:",st.session_state.role)
 
     if st.sidebar.button("Logout"):
+
         st.session_state.user=None
+        st.session_state.role=None
+
         st.rerun()
 
-    dashboard()
+    if st.session_state.role=="admin":
+
+        admin_dashboard()
+
+    else:
+
+        user_dashboard()
 
 else:
 
